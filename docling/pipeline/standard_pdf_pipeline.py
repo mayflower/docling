@@ -228,15 +228,15 @@ class ThreadedPipelineStage:
             return
         self._running = False
         self.input_queue.close()
+        # After a document timeout the caller no longer drains downstream
+        # queues. Unblock emitters before waiting for in-flight model calls.
+        for q in self._outputs:
+            q.close()
         if self._thread is not None:
-            # Give thread 2s to finish naturally before abandoning
-            self._thread.join(timeout=15.0)
-            if self._thread.is_alive():
-                _log.warning(
-                    "Stage %s thread did not terminate within 15s. "
-                    "Thread is likely stuck in a blocking call and will be abandoned (resources may leak).",
-                    self.name,
-                )
+            # Model calls cannot be safely interrupted in Python threads.
+            # Returning early lets execute() unload PDF backends that a model
+            # still uses and also permits the next conversion to overlap it.
+            self._thread.join()
 
     # ------------------------------------------------------------------ _run
     def _run(self) -> None:
@@ -333,7 +333,7 @@ class ThreadedPipelineStage:
             if self._postprocess is not None:
                 self._postprocess(item)
             for q in self._outputs:
-                if not q.put(item):
+                if not q.put(item) and self._running:
                     _log.error("Output queue closed while emitting from %s", self.name)
 
 
